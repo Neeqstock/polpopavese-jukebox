@@ -38,7 +38,7 @@ echo "Configuration:"
 echo "  Hostname: $HOSTNAME"
 echo "  Audio device: $AUDIO_DEVICE"
 echo "  SoundCloud: $([ -z "$SOUNDCLOUD_API_TOKEN" ] && echo "disabled" || echo "enabled")"
-echo "  Spotify: $([ -z "$SPOTIFY_CLIENT_ID" ] && echo "disabled" || echo "enabled")
+echo "  Spotify: $([ -z "$SPOTIFY_CLIENT_ID" ] && echo "disabled" || echo "enabled")"
 echo ""
 read -p "Proceed? (y/n) " -n 1 -r
 echo
