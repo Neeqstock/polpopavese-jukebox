@@ -202,13 +202,21 @@ chown -R "$JUKEBOX_USER:$JUKEBOX_USER" /var/cache/mopidy /var/lib/mopidy
 # Create systemd drop-in so Mopidy runs as the login user with PipeWire access
 # (The system mopidy service runs as 'mopidy' user by default, which can't reach
 #  the user's PipeWire/PulseAudio socket — this override fixes that.)
+# Enable user session at boot (required for PipeWire socket to exist without login)
+loginctl enable-linger "$JUKEBOX_USER"
+
 mkdir -p /etc/systemd/system/mopidy.service.d
 cat > /etc/systemd/system/mopidy.service.d/user.conf <<EOF
+[Unit]
+After=user@${JUKEBOX_UID}.service sound.target
+
 [Service]
 User=$JUKEBOX_USER
 Group=$JUKEBOX_USER
 Environment=XDG_RUNTIME_DIR=/run/user/$JUKEBOX_UID
 Environment=PULSE_SERVER=unix:/run/user/$JUKEBOX_UID/pulse/native
+Restart=on-failure
+RestartSec=5
 EOF
 
 # Start Mopidy
@@ -275,7 +283,7 @@ rm -rf "$GMRENDER_SRC"
 cat > /etc/systemd/system/gmediarender.service <<EOF
 [Unit]
 Description=GMediaRender UPnP/DLNA Renderer
-After=network-online.target
+After=network-online.target user@${JUKEBOX_UID}.service sound.target
 Wants=network-online.target
 
 [Service]
@@ -357,7 +365,7 @@ rm -rf "$SCREAM_SRC"
 cat > /etc/systemd/system/scream-receiver.service <<EOF
 [Unit]
 Description=Scream Audio Receiver (Windows network audio)
-After=network-online.target
+After=network-online.target user@${JUKEBOX_UID}.service
 Wants=network-online.target
 
 [Service]
