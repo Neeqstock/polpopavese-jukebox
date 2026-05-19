@@ -1,0 +1,16 @@
+sudo systemctl stop mopidy nginx snapserver snapclient dnsmasq avahi-daemon jukebox-qr 2>/dev/null; \
+sudo systemctl disable mopidy nginx snapserver snapclient dnsmasq avahi-daemon jukebox-qr 2>/dev/null; \
+sudo apt-get remove --purge -y mopidy nginx nginx-common snapserver snapclient dnsmasq avahi-daemon qrencode feh 2>/dev/null; \
+sudo apt-get autoremove -y; \
+sudo rm -rf /etc/mopidy /etc/nginx /etc/snapserver.conf /etc/dnsmasq.conf \
+            /opt/mopidy-env /tmp/snapfifo \
+            /etc/systemd/system/mopidy.service.d \
+            /etc/systemd/system/jukebox-qr.service \
+            /usr/local/bin/jukebox-qr.sh \
+            /etc/apt/sources.list.d/mopidy.list \
+            /etc/apt/keyrings/mopidy.gpg \
+            ~/.config/mopidy ~/jukebox-qr.png; \
+sudo pip3 uninstall -y mopidy mopidy-iris mopidy-youtube mopidy-local mopidy-party mopidy-bandcamp yt-dlp 2>/dev/null; \
+sudo systemctl daemon-reload; \
+sudo apt-get update -qq; \
+echo "Clean slate ✓"

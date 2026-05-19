@@ -1,0 +1,527 @@
+#!/bin/bash
+# =============================================================================
+#  polpopavesejukebox — full setup script
+#  Tested on Raspberry Pi OS / Debian 12 Bookworm / Ubuntu 22.04+
+#  Run as a normal user with sudo access:  bash jukebox-setup.sh
+# =============================================================================
+
+set -e  # exit on error
+
+# --- colours -----------------------------------------------------------------
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+CYAN='\033[0;36m'; BOLD='\033[1m'; NC='\033[0m'
+
+info()    { echo -e "${CYAN}[•]${NC} $*"; }
+success() { echo -e "${GREEN}[✓]${NC} $*"; }
+warn()    { echo -e "${YELLOW}[!]${NC} $*"; }
+fatal()   { echo -e "${RED}[✗]${NC} $*"; exit 1; }
+section() { echo -e "\n${BOLD}━━━  $*  ━━━${NC}"; }
+
+# =============================================================================
+# CONFIG — edit these if needed
+# =============================================================================
+HOSTNAME="polpopavesejukebox"
+JUKEBOX_USER="${SUDO_USER:-$USER}"
+MUSIC_DIR="/home/$JUKEBOX_USER/Music"
+MOPIDY_PORT=6680
+SNAP_PORT=1780
+QR_PNG="/home/$JUKEBOX_USER/jukebox-qr.png"
+IFACE=""  # leave empty to auto-detect
+
+# =============================================================================
+# PRE-FLIGHT
+# =============================================================================
+section "Pre-flight checks"
+
+[[ $EUID -ne 0 ]] && fatal "Please run with sudo:  sudo bash $0"
+
+# Detect network interface
+if [[ -z "$IFACE" ]]; then
+    IFACE=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1)}' | head -1)
+    [[ -z "$IFACE" ]] && IFACE="wlan0"
+fi
+info "Network interface: $IFACE"
+
+# Detect local IP early (needed for dnsmasq config)
+IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}' | head -1)
+[[ -z "$IP" ]] && IP=$(ip addr show | awk '/inet / && !/127\.0\.0\.1/ {split($2,a,"/"); print a[1]; exit}')
+[[ -z "$IP" ]] && fatal "Could not detect local IP address — check network connectivity"
+info "Local IP: $IP"
+
+# Detect OS
+if grep -qi "raspberry" /proc/cpuinfo 2>/dev/null || grep -qi "raspbian\|raspberry" /etc/os-release 2>/dev/null; then
+    IS_PI=true
+else
+    IS_PI=false
+fi
+info "Raspberry Pi: $IS_PI"
+
+mkdir -p "$MUSIC_DIR"
+info "Music directory: $MUSIC_DIR"
+
+# =============================================================================
+# 1. SYSTEM PACKAGES
+# =============================================================================
+section "1 · System packages"
+
+info "Updating package lists..."
+apt-get update -qq
+
+info "Installing dependencies..."
+apt-get install -y -qq \
+    curl wget git python3 python3-pip \
+    nginx avahi-daemon dnsmasq \
+    qrencode gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly \
+    gstreamer1.0-plugins-bad gstreamer1.0-alsa gstreamer1.0-pulseaudio \
+    shairport-sync \
+    feh 2>/dev/null || true
+
+success "System packages installed"
+
+# =============================================================================
+# 2. MOPIDY
+# =============================================================================
+section "2 · Mopidy"
+
+if ! command -v mopidy &>/dev/null; then
+    info "Adding Mopidy apt repository..."
+    mkdir -p /etc/apt/keyrings
+    wget -q -O /etc/apt/keyrings/mopidy.gpg https://apt.mopidy.com/mopidy.gpg
+    wget -q -O /etc/apt/sources.list.d/mopidy.list https://apt.mopidy.com/bookworm.list
+    apt-get update -qq
+    apt-get install -y -qq mopidy
+    success "Mopidy installed"
+else
+    success "Mopidy already installed, skipping"
+fi
+
+# =============================================================================
+# 3. UV + MOPIDY EXTENSIONS (system-wide)
+# =============================================================================
+section "3 · Mopidy extensions (uv, system-wide)"
+
+# Install uv if not present
+if ! command -v uv &>/dev/null; then
+    info "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    # Make uv available in current shell
+    export PATH="$HOME/.cargo/bin:/root/.local/bin:$PATH"
+fi
+
+UV=$(command -v uv) || fatal "uv not found after install — check PATH"
+info "uv: $UV"
+
+info "Installing Mopidy extensions system-wide..."
+"$UV" pip install --system --break-system-packages \
+    Mopidy-Iris \
+    Mopidy-Muse \
+    Mopidy-YouTube \
+    Mopidy-YTMusic \
+    Mopidy-Local \
+    Mopidy-Party \
+    Mopidy-Bandcamp \
+    yt-dlp
+
+success "Extensions installed system-wide"
+
+# Remove any leftover venv override from previous attempts
+rm -f /etc/systemd/system/mopidy.service.d/venv.conf
+rmdir /etc/systemd/system/mopidy.service.d 2>/dev/null || true
+systemctl daemon-reload
+success "Mopidy systemd unit uses system Python"
+
+# =============================================================================
+# 4. MOPIDY CONFIG
+# =============================================================================
+section "4 · Mopidy configuration"
+
+MOPIDY_CONF="/etc/mopidy/mopidy.conf"
+mkdir -p /etc/mopidy
+
+cat > "$MOPIDY_CONF" <<EOF
+[core]
+restore_state = true
+
+[logging]
+verbosity = 1
+
+[http]
+enabled = true
+hostname = 0.0.0.0
+port = $MOPIDY_PORT
+csrf_protection = false
+
+[audio]
+# Direct output — change to filesink for Snapcast (see Snapcast section below)
+output = autoaudiosink
+
+[local]
+enabled = true
+media_dir = $MUSIC_DIR
+
+[youtube]
+enabled = true
+youtube_dl_package = yt_dlp
+autoplay_enabled = false
+
+[bandcamp]
+enabled = true
+
+[ytmusic]
+enabled = true
+
+[party]
+enabled = true
+
+[iris]
+# Iris config (mostly auto-detected)
+EOF
+
+# Allow mopidy to read the config
+chown mopidy:audio "$MOPIDY_CONF" 2>/dev/null || true
+success "Mopidy config written to $MOPIDY_CONF"
+
+# =============================================================================
+# 5. SNAPCAST
+# =============================================================================
+section "5 · Snapcast"
+
+SNAP_FIFO="/tmp/snapfifo"
+
+install_snapcast() {
+    SNAP_FALLBACK="0.31.0"
+
+    info "Fetching latest Snapcast version..."
+    SNAP_VER=$(curl -sf --max-time 10 https://api.github.com/repos/snapcast/snapcast/releases/latest \
+        | grep '"tag_name"' | cut -d'"' -f4 | tr -d 'v')
+
+    if [[ -z "$SNAP_VER" ]]; then
+        warn "GitHub API unavailable, falling back to Snapcast $SNAP_FALLBACK"
+        SNAP_VER="$SNAP_FALLBACK"
+    else
+        info "Latest Snapcast: $SNAP_VER"
+    fi
+
+    ARCH=$(dpkg --print-architecture)
+    if $IS_PI && [[ "$ARCH" == "arm64" ]]; then
+        SNAP_DEB="snapserver_${SNAP_VER}-1_arm64_bookworm.deb"
+    elif $IS_PI; then
+        SNAP_DEB="snapserver_${SNAP_VER}-1_armhf_bookworm.deb"
+    else
+        SNAP_DEB="snapserver_${SNAP_VER}-1_amd64_bookworm.deb"
+    fi
+
+    TMP=$(mktemp -d)
+    wget -q -O "$TMP/$SNAP_DEB" \
+        "https://github.com/snapcast/snapcast/releases/download/v${SNAP_VER}/$SNAP_DEB" || return 1
+    dpkg -i "$TMP/$SNAP_DEB" || apt-get install -f -y -qq
+    rm -rf "$TMP"
+}
+
+if ! command -v snapserver &>/dev/null; then
+    info "Installing Snapcast server..."
+    if install_snapcast; then
+        success "Snapcast installed"
+    else
+        warn "Snapcast install failed — skipping multi-room audio"
+    fi
+else
+    success "Snapcast already installed"
+fi
+
+if command -v snapserver &>/dev/null; then
+    # Create the named pipe
+    [[ -p "$SNAP_FIFO" ]] || mkfifo "$SNAP_FIFO"
+    chown mopidy:audio "$SNAP_FIFO" 2>/dev/null || true
+
+    # Snapcast server config (Jukebox source + AirPlay source)
+    cat > /etc/snapserver.conf <<EOF
+[server]
+threads = -1
+
+[stream]
+source = pipe://$SNAP_FIFO?name=Jukebox&sampleformat=48000:16:2&codec=pcm
+source = pipe:///tmp/airplayfifo?name=AirPlay&sampleformat=44100:16:2&codec=pcm
+
+[http]
+enabled = true
+port = $SNAP_PORT
+EOF
+
+    # Switch Mopidy audio output to the fifo
+    sed -i 's|^output = autoaudiosink|output = audioresample ! audioconvert ! audio/x-raw,rate=48000,channels=2,format=S16LE ! filesink location=/tmp/snapfifo|' "$MOPIDY_CONF"
+
+    systemctl enable --now snapserver 2>/dev/null || true
+    success "Snapcast configured (stream pipe: $SNAP_FIFO)"
+fi
+
+# =============================================================================
+# 5b. AIRPLAY (Shairport Sync → Snapcast)
+# =============================================================================
+section "5b · AirPlay receiver (Shairport Sync)"
+
+AIRPLAY_FIFO="/tmp/airplayfifo"
+
+[[ -p "$AIRPLAY_FIFO" ]] || mkfifo "$AIRPLAY_FIFO"
+chown shairport-sync:audio "$AIRPLAY_FIFO" 2>/dev/null || true
+chmod 660 "$AIRPLAY_FIFO"
+
+cat > /etc/shairport-sync.conf <<EOF
+general = {
+  name = "Jukebox AirPlay";
+  drift_tolerance_in_seconds = 0.002;
+};
+
+pipe = {
+  name = "$AIRPLAY_FIFO";
+};
+EOF
+
+echo 'DAEMON_ARGS="-o pipe"' > /etc/default/shairport-sync
+
+systemctl enable --now shairport-sync 2>/dev/null || true
+success "AirPlay receiver configured — look for 'Jukebox AirPlay' in AirPlay menus"
+
+# =============================================================================
+# 5c. SNAPCLIENT (local playback)
+# =============================================================================
+section "5c · Snapcast client (local speakers)"
+
+if command -v snapserver &>/dev/null; then
+    ARCH=$(dpkg --print-architecture)
+    if $IS_PI && [[ "$ARCH" == "arm64" ]]; then
+        SNAP_CLIENT_DEB="snapclient_${SNAP_VER}-1_arm64_bookworm.deb"
+    elif $IS_PI; then
+        SNAP_CLIENT_DEB="snapclient_${SNAP_VER}-1_armhf_bookworm.deb"
+    else
+        SNAP_CLIENT_DEB="snapclient_${SNAP_VER}-1_amd64_bookworm.deb"
+    fi
+
+    if ! command -v snapclient &>/dev/null; then
+        TMP=$(mktemp -d)
+        wget -q -O "$TMP/$SNAP_CLIENT_DEB" \
+            "https://github.com/snapcast/snapcast/releases/download/v${SNAP_VER}/$SNAP_CLIENT_DEB" \
+            && dpkg -i "$TMP/$SNAP_CLIENT_DEB" || apt-get install -f -y -qq
+        rm -rf "$TMP"
+    fi
+
+    # Run snapclient as JUKEBOX_USER so it can reach the PipeWire/PulseAudio socket
+    JUKEBOX_UID=$(id -u "$JUKEBOX_USER" 2>/dev/null || echo 1000)
+    mkdir -p /etc/systemd/system/snapclient.service.d
+    cat > /etc/systemd/system/snapclient.service.d/user.conf <<EOF
+[Service]
+User=$JUKEBOX_USER
+Environment=PULSE_SERVER=unix:/run/user/${JUKEBOX_UID}/pulse/native
+EOF
+
+    echo 'START_SNAPCLIENT=true' > /etc/default/snapclient
+    echo 'SNAPCLIENT_OPTS="--host 127.0.0.1 --soundcard pulse"' >> /etc/default/snapclient
+
+    systemctl daemon-reload
+    systemctl enable --now snapclient 2>/dev/null || true
+    success "Snapclient configured (output: PipeWire/PulseAudio)"
+fi
+
+# =============================================================================
+# 6. NGINX
+# =============================================================================
+section "6 · nginx reverse proxy"
+
+cat > /etc/nginx/sites-available/jukebox <<EOF
+server {
+    listen 80;
+    server_name $HOSTNAME _;
+
+    # Redirect root to Muse UI (clean default interface)
+    location = / {
+        return 302 /muse/;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:$MOPIDY_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host \$host;
+        proxy_read_timeout 86400;
+    }
+}
+EOF
+
+ln -sf /etc/nginx/sites-available/jukebox /etc/nginx/sites-enabled/jukebox
+rm -f /etc/nginx/sites-enabled/default
+nginx -t && systemctl restart nginx
+success "nginx configured — proxying $HOSTNAME → localhost:$MOPIDY_PORT"
+
+# =============================================================================
+# 7. DNSMASQ (custom hostname)
+# =============================================================================
+section "7 · dnsmasq (custom hostname)"
+
+# Disable systemd-resolved stub listener to free port 53
+RESOLVED_CONF="/etc/systemd/resolved.conf"
+if grep -q "^DNSStubListener" "$RESOLVED_CONF" 2>/dev/null; then
+    sed -i 's/^DNSStubListener.*/DNSStubListener=no/' "$RESOLVED_CONF"
+else
+    echo -e "\n[Resolve]\nDNSStubListener=no" >> "$RESOLVED_CONF"
+fi
+systemctl restart systemd-resolved 2>/dev/null || true
+
+cat > /etc/dnsmasq.conf <<EOF
+# Resolve the jukebox hostname to this machine regardless of its IP
+address=/$HOSTNAME/$IP
+
+# Listen on all interfaces
+interface=$IFACE
+listen-address=127.0.0.1,$IP
+
+# Don't forward short hostnames upstream
+domain-needed
+bogus-priv
+EOF
+
+systemctl enable --now dnsmasq
+success "dnsmasq configured — http://$HOSTNAME resolves locally"
+
+# =============================================================================
+# 8. AVAHI (mDNS — jukebox.local fallback)
+# =============================================================================
+section "8 · avahi mDNS"
+
+hostnamectl set-hostname "$HOSTNAME" 2>/dev/null || true
+systemctl enable --now avahi-daemon
+success "avahi running — http://$HOSTNAME.local also works"
+
+# =============================================================================
+# 8b. SNAPFIFO KEEPER (prevents EOF gap between snapserver and mopidy)
+# =============================================================================
+section "8b · Snapfifo keeper"
+
+cat > /usr/local/bin/snapfifo-keeper.py << 'PYEOF'
+#!/usr/bin/env python3
+import os, time, signal, sys
+
+PIPES = ["/tmp/snapfifo", "/tmp/airplayfifo"]
+fds = []
+
+def cleanup(sig, frame):
+    for fd in fds:
+        try: os.close(fd)
+        except: pass
+    sys.exit(0)
+
+signal.signal(signal.SIGTERM, cleanup)
+
+for p in PIPES:
+    if not os.path.exists(p):
+        os.mkfifo(p, 0o666)
+    os.chmod(p, 0o666)
+    fd = os.open(p, os.O_RDWR | os.O_NONBLOCK)
+    fds.append(fd)
+
+while True:
+    time.sleep(3600)
+PYEOF
+chmod +x /usr/local/bin/snapfifo-keeper.py
+
+cat > /etc/systemd/system/snapfifo-keeper.service << EOF
+[Unit]
+Description=Keep Snapcast source FIFOs open (prevents EOF gaps)
+After=snapserver.service
+BindsTo=snapserver.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/bash -c "sleep 3"
+ExecStart=/usr/local/bin/snapfifo-keeper.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+success "Snapfifo keeper service installed"
+
+# =============================================================================
+# 9. QR CODE + AUTO-REFRESH ON BOOT
+# =============================================================================
+section "9 · QR code"
+
+# Generate QR now
+qrencode -o "$QR_PNG" -s 8 "http://$HOSTNAME"
+chown "$JUKEBOX_USER:$JUKEBOX_USER" "$QR_PNG" 2>/dev/null || true
+success "QR code saved to $QR_PNG"
+
+# Boot script to regenerate QR and display it
+QR_SCRIPT="/usr/local/bin/jukebox-qr.sh"
+cat > "$QR_SCRIPT" <<'SCRIPT'
+#!/bin/bash
+sleep 12
+qrencode -o QR_PNG_PLACEHOLDER -s 8 "http://HOSTNAME_PLACEHOLDER"
+# Display on attached screen if available
+if command -v feh &>/dev/null && [[ -n "$DISPLAY" ]]; then
+    feh --fullscreen QR_PNG_PLACEHOLDER &
+fi
+SCRIPT
+sed -i "s|QR_PNG_PLACEHOLDER|$QR_PNG|g; s|HOSTNAME_PLACEHOLDER|$HOSTNAME|g" "$QR_SCRIPT"
+chmod +x "$QR_SCRIPT"
+
+cat > /etc/systemd/system/jukebox-qr.service <<EOF
+[Unit]
+Description=Jukebox QR code display
+After=network-online.target graphical.target
+Wants=network-online.target
+
+[Service]
+User=$JUKEBOX_USER
+ExecStart=$QR_SCRIPT
+Type=oneshot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable jukebox-qr
+success "QR boot service enabled"
+
+# =============================================================================
+# 10. ENABLE & START EVERYTHING
+# =============================================================================
+section "10 · Starting services"
+
+for svc in mopidy nginx dnsmasq avahi-daemon snapserver snapfifo-keeper snapclient shairport-sync; do
+    if systemctl enable --now "$svc" 2>/dev/null; then
+        success "$svc enabled and started"
+    else
+        warn "$svc could not be started — check: systemctl status $svc"
+    fi
+done
+
+# =============================================================================
+# DONE
+# =============================================================================
+IP=$(ip addr show | awk '/inet / && !/127\.0\.0\.1/ {split($2,a,"/"); print a[1]; exit}')  # re-read in case it changed
+
+echo ""
+echo -e "${GREEN}${BOLD}╔══════════════════════════════════════════╗${NC}"
+echo -e "${GREEN}${BOLD}║        🎵  Jukebox is ready!  🎵         ║${NC}"
+echo -e "${GREEN}${BOLD}╚══════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "  Web UI:       ${CYAN}http://$HOSTNAME${NC}"
+echo -e "  mDNS:         ${CYAN}http://$HOSTNAME.local${NC}  (iOS/macOS/Windows)"
+echo -e "  Direct IP:    ${CYAN}http://$IP${NC}  (Android fallback)"
+echo -e "  Snapcast:     ${CYAN}http://$IP:$SNAP_PORT${NC}  (multi-room)"
+echo -e "  QR code:      ${CYAN}$QR_PNG${NC}"
+echo ""
+echo -e "  Music folder: ${CYAN}$MUSIC_DIR${NC}"
+echo -e "  Mopidy conf:  ${CYAN}$MOPIDY_CONF${NC}"
+echo ""
+echo -e "  ${YELLOW}Tip:${NC} Add Spotify credentials to $MOPIDY_CONF when ready"
+echo -e "  ${YELLOW}Tip:${NC} Drop .mp3/.flac files in $MUSIC_DIR then run:"
+echo -e "       ${CYAN}sudo mopidyctl local scan${NC}"
+  echo -e "  ${YELLOW}Tip:${NC} AirPlay from iOS/macOS → select ${CYAN}'Jukebox AirPlay'${NC} in AirPlay menu"
+  echo -e "  ${YELLOW}Tip:${NC} Android/Linux → open ${CYAN}http://$IP:$SNAP_PORT${NC} in browser to listen"

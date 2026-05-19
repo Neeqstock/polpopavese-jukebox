@@ -1,0 +1,6 @@
+# On Debian/Ubuntu/Raspberry Pi OS
+sudo mkdir -p /etc/apt/keyrings
+wget -q -O - https://apt.mopidy.com/mopidy.gpg | sudo tee /etc/apt/keyrings/mopidy.gpg > /dev/null
+sudo wget -q -O /etc/apt/sources.list.d/mopidy.list https://apt.mopidy.com/bookworm.list
+sudo apt update
+sudo apt install -y mopidy

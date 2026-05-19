@@ -1,0 +1,25 @@
+import requests
+import socket
+import os
+
+# Configuration
+TOKEN = os.environ.get("BITLY_TOKEN")
+if not TOKEN:
+    raise RuntimeError("BITLY_TOKEN environment variable is not set. Export it before running this script.")
+BITLINK = "bit.ly/polpo-jukebox"  # Your custom bitly link
+
+# 1. Automatically grab the current local IP address
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.connect(("8.8.8.8", 80))
+current_ip = f"http://{s.getsockname()[0]}"
+s.close()
+
+# 2. Tell Bitly to update the destination to the new IP
+headers = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+data = {"long_url": current_ip}
+response = requests.patch(f"https://api-ssl.bitly.com/v4/bitlinks/{BITLINK}", json=data, headers=headers)
+
+if response.status_code == 200:
+   print(f"Success! QR Code now points to {current_ip}")
+else:
+   print("Failed to update Bitly link.")
