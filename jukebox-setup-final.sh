@@ -392,12 +392,27 @@ if [ -f /etc/systemd/resolved.conf ]; then
   systemctl restart systemd-resolved 2>/dev/null || true
 fi
 
+# Detect LAN interface and IP
+JUKEBOX_LAN_IF=$(ip route | awk '/default/ {print $5}' | head -1)
+JUKEBOX_LAN_IP=$(ip -4 addr show "$JUKEBOX_LAN_IF" | awk '/inet / {print $2}' | cut -d/ -f1)
+UPSTREAM_DNS=$(grep '^nameserver' /etc/resolv.conf | grep -v "$JUKEBOX_LAN_IP\|127.0.0.1" | head -1 | awk '{print $2}')
+UPSTREAM_DNS=${UPSTREAM_DNS:-192.168.1.1}
+
 cat > /etc/dnsmasq.conf <<EOF
-# PolpoJukebox — dnsmasq config
-listen-address=127.0.0.1
+# PolpoJukebox — dnsmasq
+# Set your router DHCP "DNS server" to $JUKEBOX_LAN_IP so all LAN devices
+# resolve polpo-jukebox without any per-device config.
+listen-address=127.0.0.1,$JUKEBOX_LAN_IP
 bind-interfaces
-addn-hosts=/etc/hosts
-cache-size=150
+no-hosts
+cache-size=300
+
+# Forward all other queries to upstream DNS (router/ISP)
+server=$UPSTREAM_DNS
+
+# Resolve this jukebox by hostname for any LAN client using this as DNS
+address=/$JUKEBOX_HOSTNAME/$JUKEBOX_LAN_IP
+address=/$JUKEBOX_HOSTNAME.local/$JUKEBOX_LAN_IP
 EOF
 
 systemctl enable dnsmasq

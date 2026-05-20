@@ -22,7 +22,7 @@ fi
 echo ""
 echo "[1/5] Stopping all services..."
 
-for svc in mopidy nginx shairport-sync gmrender-resurrect snapserver snapclient snapfifo-keeper dnsmasq avahi-daemon; do
+for svc in mopidy nginx gmrender-resurrect snapserver snapclient snapfifo-keeper dnsmasq avahi-daemon; do
   if systemctl is-active --quiet "$svc" 2>/dev/null; then
     echo "  Stopping $svc..."
     systemctl stop "$svc" || true
@@ -41,7 +41,7 @@ apt-get remove -y mopidy 2>/dev/null || true
 pip3 uninstall -y Mopidy-Muse Mopidy-Iris Mopidy-YouTube Mopidy-YTMusic Mopidy-Local Mopidy-SoundCloud Mopidy-Spotify 2>/dev/null || true
 
 # Remove other services
-apt-get remove -y shairport-sync gmrender-resurrect snapserver snapclient dnsmasq avahi-daemon nginx 2>/dev/null || true
+apt-get remove -y gmrender-resurrect snapserver snapclient dnsmasq avahi-daemon nginx 2>/dev/null || true
 
 # Clean apt cache
 apt-get autoremove -y 2>/dev/null || true
@@ -50,11 +50,9 @@ echo ""
 echo "[3/5] Removing configuration files..."
 
 rm -f /etc/mopidy/mopidy.conf
-rm -f /etc/shairport-sync.conf
 rm -f /etc/snapserver.conf
-rm -f /etc/default/snapclient
-rm -f /etc/default/gmrender-resurrect
-rm -f /etc/default/shairport-sync
+  rm -f /etc/default/snapclient
+  rm -f /etc/default/gmrender-resurrect
 rm -f /etc/dnsmasq.conf
 rm -f /etc/nginx/sites-available/jukebox
 rm -f /etc/nginx/sites-enabled/jukebox
@@ -76,7 +74,6 @@ echo "[5/5] Removing data and runtime files..."
 rm -rf /var/lib/mopidy
 rm -rf /var/cache/mopidy
 rm -f /tmp/snapfifo
-rm -f /tmp/airplayfifo
 rm -f /usr/local/bin/snapfifo-keeper.py
 
 echo ""

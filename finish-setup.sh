@@ -6,28 +6,7 @@ JUKEBOX_USER="polpopavese"
 JUKEBOX_UID=$(id -u "$JUKEBOX_USER")
 AUDIO_DEVICE="@DEFAULT_SINK@"
 
-echo "[5/9] Installing Shairport Sync (AirPlay)..."
-apt-get install -y shairport-sync
-cat > /etc/shairport-sync.conf <<EOF
-general = {
-  name = "$HOSTNAME AirPlay";
-  log_verbosity = 1;
-  drift_tolerance_in_seconds = 0.002;
-  resync_threshold_in_seconds = 0.050;
-};
-audio = {
-  output_backend = "pa";
-  output_device = "$AUDIO_DEVICE";
-};
-sessioncontrol = {
-  wait_for_output = yes;
-  dacp_server_port = 3689;
-};
-EOF
-systemctl enable shairport-sync
-systemctl restart shairport-sync
-
-echo "[6/9] Installing gmrender-resurrect (DLNA)..."
+echo "[5/9] Installing gmrender-resurrect (DLNA)..."
 apt-get install -y \
   git build-essential automake autoconf libtool pkg-config \
   libupnp-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \

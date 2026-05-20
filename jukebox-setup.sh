@@ -20,7 +20,7 @@ if [[ "$JUKEBOX_USER" == "root" ]]; then
 fi
 
 echo "=== PolpoJukebox Setup ==="
-echo "This will install Mopidy, Shairport Sync, DLNA receiver, nginx, and PipeWire audio."
+echo "This will install Mopidy, DLNA receiver, nginx, and PipeWire audio."
 echo ""
 read -p "Hostname for this jukebox (default: jukebox): " HOSTNAME
 HOSTNAME=${HOSTNAME:-jukebox}
@@ -280,36 +280,6 @@ echo "Waiting for Mopidy to start..."
 sleep 3
 
 # ============================================================================
-# SHAIRPORT SYNC (AirPlay)
-# ============================================================================
-
-echo "[5/10] Installing Shairport Sync (AirPlay receiver)..."
-
-apt-get install -y shairport-sync
-
-cat > /etc/shairport-sync.conf <<EOF
-general = {
-  name = "$HOSTNAME AirPlay";
-  log_verbosity = 1;
-  drift_tolerance_in_seconds = 0.002;
-  resync_threshold_in_seconds = 0.050;
-};
-
-audio = {
-  output_backend = "pa";
-  output_device = "$AUDIO_DEVICE";
-};
-
-sessioncontrol = {
-  wait_for_output = "yes";
-  dacp_server_port = 3689;
-};
-EOF
-
-systemctl enable shairport-sync
-systemctl restart shairport-sync
-
-# ============================================================================
 # GMRENDER-RESURRECT (DLNA/UPnP for Android)
 # ============================================================================
 
@@ -527,7 +497,7 @@ echo "  • SoundCloud $([ -z "$SOUNDCLOUD_API_TOKEN" ] && echo "(not configured
 echo "  • Spotify $([ -z "$SPOTIFY_CLIENT_ID" ] && echo "(not configured)" || echo "(configured)")"
 echo ""
 echo "Service status:"
-for svc in mopidy nginx shairport-sync avahi-daemon gmediarender bluetooth bt-agent dnsmasq; do
+for svc in mopidy nginx avahi-daemon gmediarender bluetooth bt-agent dnsmasq; do
   status=$(systemctl is-active "$svc" 2>/dev/null || echo "N/A")
   echo "  $svc: $status"
 done

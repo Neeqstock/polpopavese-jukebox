@@ -13,7 +13,7 @@ fi
 echo "=== PolpoJukebox Cleanup ==="
 echo "This will remove:"
 echo "  • Mopidy and all extensions"
-echo "  • Shairport Sync, gmrender-resurrect, Snapcast"
+echo "  • gmrender-resurrect, Snapcast"
 echo "  • nginx, dnsmasq"
 echo "  • Spotify/YouTube/Bandcamp config from mopidy.conf"
 echo "  • Systemd services and override files"
@@ -25,16 +25,16 @@ if [[ ! $REPLY =~ ^[Yy]$ ]]; then
 fi
 
 echo "[1/5] Stopping services…"
-systemctl stop mopidy snapserver shairport-sync gmrender-resurrect nginx dnsmasq avahi-daemon 2>/dev/null || true
+systemctl stop mopidy snapserver gmrender-resurrect nginx dnsmasq avahi-daemon 2>/dev/null || true
 
 echo "[2/5] Disabling services…"
-systemctl disable mopidy snapserver shairport-sync gmrender-resurrect nginx dnsmasq avahi-daemon 2>/dev/null || true
+systemctl disable mopidy snapserver gmrender-resurrect nginx dnsmasq avahi-daemon 2>/dev/null || true
 systemctl disable avahi-daemon.socket 2>/dev/null || true
 
 echo "[3/5] Removing packages…"
 apt-get remove -y \
   mopidy mopidy-iris mopidy-spotify mopidy-youtube mopidy-local mopidy-party mopidy-bandcamp \
-  shairport-sync gmrender-resurrect snapserver snapclient \
+  gmrender-resurrect snapserver snapclient \
   nginx dnsmasq \
   2>/dev/null || true
 apt-get autoremove -y 2>/dev/null || true
