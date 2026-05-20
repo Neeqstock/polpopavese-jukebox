@@ -50,7 +50,7 @@ fi
 # SYSTEM CONFIGURATION
 # ============================================================================
 
-echo "[1/9] Setting hostname to '$HOSTNAME'..."
+echo "[1/10] Setting hostname to '$HOSTNAME'..."
 hostnamectl set-hostname "$HOSTNAME"
 echo "127.0.0.1 localhost" > /etc/hosts
 echo "::1 localhost" >> /etc/hosts
@@ -60,10 +60,11 @@ echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
 # DEPENDENCIES
 # ============================================================================
 
-echo "[2/9] Installing system dependencies..."
+echo "[2/10] Installing system dependencies..."
 
 # Add Mopidy official repository
 mkdir -p /etc/apt/keyrings
+rm -f /etc/apt/sources.list.d/mopidy.sources
 wget -q -O - https://apt.mopidy.com/mopidy.gpg | tee /etc/apt/keyrings/mopidy.gpg > /dev/null
 echo "deb [signed-by=/etc/apt/keyrings/mopidy.gpg] https://apt.mopidy.com/ bookworm main" > /etc/apt/sources.list.d/mopidy.list
 
@@ -88,7 +89,7 @@ pip3 install --upgrade --break-system-packages yt-dlp
 # PIPEWIRE SETUP
 # ============================================================================
 
-echo "[3/9] Configuring PipeWire for audio mixing..."
+echo "[3/10] Configuring PipeWire for audio mixing..."
 
 # PipeWire should already be installed on Ubuntu 24.04.
 # Enable PulseAudio-compatible TCP listener so other Linux machines on the
@@ -114,7 +115,7 @@ fi
 # MOPIDY
 # ============================================================================
 
-echo "[4/9] Installing Mopidy and extensions..."
+echo "[4/10] Installing Mopidy and extensions..."
 
 # Install Mopidy from official repo
 apt-get install -y mopidy
@@ -140,12 +141,24 @@ if [ -n "$SPOTIFY_CLIENT_ID" ] && [ -n "$SPOTIFY_CLIENT_SECRET" ]; then
   esac
 
   if [ -n "$GST_ARCH" ]; then
-    # v0.15.0-alpha.1 is required for Mopidy-Spotify 5.x (Rust backend)
-    GST_SPOTIFY_VER="0.15.0-alpha.1"
-    GST_SPOTIFY_URL="https://github.com/mopidy/gst-plugins-rs-build/releases/download/v${GST_SPOTIFY_VER}/gst-plugin-spotify_${GST_SPOTIFY_VER}_$GST_ARCH.deb"
-    wget -q -O /tmp/gst-plugin-spotify.deb "$GST_SPOTIFY_URL"
-    apt-get install -y /tmp/gst-plugin-spotify.deb
-    rm /tmp/gst-plugin-spotify.deb
+    echo "Looking up the latest gst-plugin-spotify release..."
+    GST_SPOTIFY_URL=$(curl -sL https://api.github.com/repos/mopidy/gst-plugins-rs-build/releases/latest 2>/dev/null |
+      python3 -c "import sys, json; data=json.load(sys.stdin); arch='$GST_ARCH';
+assets=data.get('assets', []);
+urls=[a['browser_download_url'] for a in assets if a['name'].endswith('-0mopidy1_{}.deb'.format(arch))];
+print(urls[0] if urls else '')" 2>/dev/null || true)
+
+    if [ -n "$GST_SPOTIFY_URL" ]; then
+      echo "Downloading: $GST_SPOTIFY_URL"
+      if wget -q -O /tmp/gst-plugin-spotify.deb "$GST_SPOTIFY_URL"; then
+        apt-get install -y /tmp/gst-plugin-spotify.deb
+        rm -f /tmp/gst-plugin-spotify.deb
+      else
+        echo "Warning: Failed to download Spotify GStreamer plugin. Spotify may not work."
+      fi
+    else
+      echo "Warning: Could not determine Spotify plugin download URL. Skipping plugin installation."
+    fi
   else
     echo "Warning: Unsupported architecture for Spotify Rust plugin. Skipping."
   fi
@@ -156,6 +169,7 @@ fi
 
 # Configure Mopidy
 # Note: allowed_origins must list every hostname clients will use
+mkdir -p /etc/mopidy /var/cache/mopidy /var/lib/mopidy
 cat > /etc/mopidy/mopidy.conf <<EOF
 [core]
 cache_dir = /var/cache/mopidy
@@ -269,7 +283,7 @@ sleep 3
 # SHAIRPORT SYNC (AirPlay)
 # ============================================================================
 
-echo "[5/9] Installing Shairport Sync (AirPlay receiver)..."
+echo "[5/10] Installing Shairport Sync (AirPlay receiver)..."
 
 apt-get install -y shairport-sync
 
@@ -299,7 +313,7 @@ systemctl restart shairport-sync
 # GMRENDER-RESURRECT (DLNA/UPnP for Android)
 # ============================================================================
 
-echo "[6/9] Installing gmrender-resurrect (DLNA receiver for Android)..."
+echo "[6/10] Installing gmrender-resurrect (DLNA receiver for Android)..."
 
 # Build from source (not in Ubuntu 24.04 repos)
 apt-get install -y \
@@ -346,7 +360,7 @@ systemctl restart gmediarender
 # BLUETOOTH RECEIVER
 # ============================================================================
 
-echo "[7/9] Setting up Bluetooth audio receiver..."
+echo "[7/10] Setting up Bluetooth audio receiver..."
 
 apt-get install -y bluez bluez-tools libspa-0.2-bluetooth
 
@@ -379,56 +393,61 @@ systemctl daemon-reload
 systemctl enable bluetooth
 systemctl enable bt-agent
 systemctl restart bluetooth
-sleep 2
-bluetoothctl power on
-bluetoothctl discoverable on
-bluetoothctl pairable on
-systemctl restart bt-agent
+sleep 5
+
+# Try to enable Bluetooth features (may fail if daemon not ready; continue anyway)
+bluetoothctl power on 2>/dev/null || true
+bluetoothctl discoverable on 2>/dev/null || true
+bluetoothctl pairable on 2>/dev/null || true
+systemctl restart bt-agent 2>/dev/null || true
 
 # ============================================================================
-# SCREAM RECEIVER (Windows audio streaming)
+# DNSMASQ (Local DNS for .local hostname on LAN)
 # ============================================================================
 
-echo "[8/10] Installing Scream receiver (Windows audio streaming)..."
+echo "[8/10] Configuring dnsmasq for LAN hostname resolution..."
 
-apt-get install -y libpulse-dev cmake
+apt-get install -y dnsmasq
 
-SCREAM_SRC=$(mktemp -d)
-git clone --depth=1 https://github.com/duncanthrax/scream.git "$SCREAM_SRC"
-cmake -DPULSEAUDIO_ENABLE=ON -B "$SCREAM_SRC/build" "$SCREAM_SRC/Receivers/unix"
-cmake --build "$SCREAM_SRC/build"
-cp "$SCREAM_SRC/build/scream" /usr/local/bin/scream-receiver
-rm -rf "$SCREAM_SRC"
+cat > /etc/dnsmasq.conf <<EOF
+# Only listen on localhost and the LAN interface
+listen-address=127.0.0.1
+bind-interfaces
 
-cat > /etc/systemd/system/scream-receiver.service <<EOF
-[Unit]
-Description=Scream Audio Receiver (Windows network audio)
-After=network-online.target user@${JUKEBOX_UID}.service
-Wants=network-online.target
+# Add hosts from /etc/hosts
+addn-hosts=/etc/hosts
 
-[Service]
-Type=simple
-User=$JUKEBOX_USER
-Group=$JUKEBOX_USER
-Environment=XDG_RUNTIME_DIR=/run/user/$JUKEBOX_UID
-Environment=PULSE_SERVER=unix:/run/user/$JUKEBOX_UID/pulse/native
-ExecStart=/usr/local/bin/scream-receiver -u -p 4010
-Restart=on-failure
-RestartSec=5
+# Enable DHCP if desired (optional — comment out if not needed)
+# dhcp-range=192.168.1.100,192.168.1.200,12h
 
-[Install]
-WantedBy=multi-user.target
+# Cache DNS responses
+cache-size=150
 EOF
 
-systemctl daemon-reload
-systemctl enable scream-receiver
-systemctl restart scream-receiver
+# Ensure the hostname resolves to localhost (for local testing)
+if ! grep -q "$HOSTNAME" /etc/hosts; then
+  echo "127.0.1.1 $HOSTNAME $HOSTNAME.local" >> /etc/hosts
+fi
+
+systemctl enable dnsmasq
+systemctl restart dnsmasq
 
 # ============================================================================
 # NGINX (Reverse Proxy)
 # ============================================================================
 
 echo "[9/10] Configuring nginx..."
+
+# Reinstall nginx to ensure /etc/nginx/nginx.conf and directory structure exist
+apt-get purge -y nginx nginx-common
+apt-get install -y nginx
+
+mkdir -p /etc/nginx/sites-available /etc/nginx/sites-enabled
+if [ ! -d /etc/nginx/sites-available ]; then
+  echo "ERROR: Could not create /etc/nginx/sites-available"
+  ls -ld /etc/nginx || true
+  exit 1
+fi
 
 cat > /etc/nginx/sites-available/jukebox <<'NGINXEOF'
 server {
@@ -488,36 +507,35 @@ echo ""
 echo "=== Setup Complete ==="
 echo ""
 echo "Hostname: $HOSTNAME"
-echo \"Web UI: http://$HOSTNAME\"
-echo \"mDNS fallback: http://$HOSTNAME.local\"
-echo \"\"
-echo \"Available interfaces:\"
-echo \"  • Iris (full-featured) — http://$HOSTNAME or http://$HOSTNAME.local\"
-echo \"  • Muse (minimal) — http://$HOSTNAME/muse/\"
-echo \"\"
-echo \"Casting support:\"
-echo \"  • AirPlay — iOS/macOS (shows as '$HOSTNAME AirPlay')\"
-echo \"  • DLNA/UPnP — Android app casting (shows as '$HOSTNAME DLNA')\"
-echo \"  • Bluetooth — any phone (shows as '$HOSTNAME' in Bluetooth settings)\"
-echo \"  • PulseAudio TCP — Linux machines on the same network (port 4713)\"
-echo \"  • Scream — Windows machines (set Scream as default audio device, port 4010 UDP)\"
-echo \"\"
-echo \"Music sources:\"
-echo \"  • YouTube\"
-echo \"  • Local files (~/Music)\"
-echo \"  • SoundCloud $([ -z \"$SOUNDCLOUD_API_TOKEN\" ] && echo \"(not configured)\" || echo \"(configured)\")\"
-echo \"  • Spotify $([ -z \"$SPOTIFY_CLIENT_ID\" ] && echo \"(not configured)\" || echo \"(configured)\")\"
-echo \"\"
-echo \"Service status:\"
-for svc in mopidy nginx shairport-sync avahi-daemon gmediarender bluetooth bt-agent scream-receiver; do
-  status=$(systemctl is-active \"$svc\" 2>/dev/null || echo \"N/A\")
-  echo \"  $svc: $status\"
+echo "Web UI: http://$HOSTNAME"
+echo "mDNS fallback: http://$HOSTNAME.local"
+echo ""
+echo "Available interfaces:"
+echo "  • Iris (full-featured) — http://$HOSTNAME or http://$HOSTNAME.local"
+echo "  • Muse (minimal) — http://$HOSTNAME/muse/"
+echo ""
+echo "Casting support:"
+echo "  • AirPlay — iOS/macOS (shows as '$HOSTNAME AirPlay')"
+echo "  • DLNA/UPnP — Android app casting (shows as '$HOSTNAME DLNA')"
+echo "  • Bluetooth — any phone (shows as '$HOSTNAME' in Bluetooth settings)"
+echo "  • PulseAudio TCP — Linux machines on the same network (port 4713)"
+echo ""
+echo "Music sources:"
+echo "  • YouTube"
+echo "  • Local files (~/Music)"
+echo "  • SoundCloud $([ -z "$SOUNDCLOUD_API_TOKEN" ] && echo "(not configured)" || echo "(configured)")"
+echo "  • Spotify $([ -z "$SPOTIFY_CLIENT_ID" ] && echo "(not configured)" || echo "(configured)")"
+echo ""
+echo "Service status:"
+for svc in mopidy nginx shairport-sync avahi-daemon gmediarender bluetooth bt-agent dnsmasq; do
+  status=$(systemctl is-active "$svc" 2>/dev/null || echo "N/A")
+  echo "  $svc: $status"
 done
-echo \"\"
-echo \"Next steps:\"
-echo \"  1. Set a static/reserved IP on your router for this machine (recommended)\"
-echo \"  2. Scan the QR code (at $QR_FILE) or visit http://$HOSTNAME from any device\"
-echo \"  3. For AirPlay (iOS/macOS): check Settings → Sound/AirPlay for '$HOSTNAME AirPlay'\"
-echo \"  4. For DLNA (Android): use a DLNA/UPnP app to find '$HOSTNAME DLNA'\"
-echo \"  5. For NewPipe (Android): NewPipe doesn't support Kodi yet (use DLNA or web UI instead)\"
-echo \"\"
+echo ""
+echo "Next steps:"
+echo "  1. Set a static/reserved IP on your router for this machine (recommended)"
+echo "  2. Scan the QR code (at $QR_FILE) or visit http://$HOSTNAME from any device"
+echo "  3. For AirPlay (iOS/macOS): check Settings → Sound/AirPlay for '$HOSTNAME AirPlay'"
+echo "  4. For DLNA (Android): use a DLNA/UPnP app to find '$HOSTNAME DLNA'"
+echo "  5. For NewPipe (Android): NewPipe doesn't support Kodi yet (use DLNA or web UI instead)"
+echo ""
