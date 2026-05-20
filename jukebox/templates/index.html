@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#121212" />
+  <title>PolpoJukebox</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <div class="container">
+
+    <header>
+      <h1>🐙 PolpoJukebox</h1>
+      <p class="subtitle">Cerca una canzone e aggiungila alla coda</p>
+    </header>
+
+    <!-- Search -->
+    <section class="section">
+      <div id="source-toggle" class="source-toggle" hidden>
+        <button id="btn-yt"      class="src-btn active">YouTube</button>
+        <button id="btn-spotify" class="src-btn">Spotify</button>
+      </div>
+      <div class="search-box">
+        <input
+          type="search"
+          id="search-input"
+          placeholder="Cerca su YouTube…"
+          autocomplete="off"
+          enterkeyhint="search"
+        />
+        <button id="search-btn" class="btn-primary">Cerca</button>
+      </div>
+      <div id="search-results" class="card-list" aria-live="polite"></div>
+    </section>
+
+    <!-- Now Playing -->
+    <section class="section" id="now-playing-section" hidden>
+      <h2 class="section-title">▶ In riproduzione</h2>
+      <div class="now-playing-card">
+        <span id="now-playing-title" class="now-playing-title">—</span>
+        <button id="skip-btn" class="btn-ghost">⏭ Salta</button>
+      </div>
+    </section>
+
+    <!-- Queue -->
+    <section class="section">
+      <h2 class="section-title">
+        📋 Coda
+        <span id="queue-count" class="queue-count-badge"></span>
+      </h2>
+      <div id="queue-list" class="card-list" aria-live="polite">
+        <p class="muted-msg">Nessuna canzone in coda. Cerca qualcosa!</p>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Toast container -->
+  <div id="toast-area" aria-live="assertive"></div>
+
+  <script>
+    'use strict';
+
+    // ── DOM refs ──────────────────────────────────────────────────────────────
+    const searchInput      = document.getElementById('search-input');
+    const searchBtn        = document.getElementById('search-btn');
+    const searchResults    = document.getElementById('search-results');
+    const sourceToggle     = document.getElementById('source-toggle');
+    const btnYt            = document.getElementById('btn-yt');
+    const btnSpotify       = document.getElementById('btn-spotify');
+    const nowPlayingSection = document.getElementById('now-playing-section');
+    const nowPlayingTitle  = document.getElementById('now-playing-title');
+    const skipBtn          = document.getElementById('skip-btn');
+    const queueList        = document.getElementById('queue-list');
+    const queueCountBadge  = document.getElementById('queue-count');
+    const toastArea        = document.getElementById('toast-area');
+
+    // ── State ────────────────────────────────────────────────────────────────────
+    let searchSource = 'youtube'; // 'youtube' | 'spotify'
+    // ── Spotify init ──────────────────────────────────────────────────────────────
+    (async () => {
+      try {
+        const res  = await fetch('/api/spotify/status');
+        const data = await res.json();
+        if (data.enabled) {
+          sourceToggle.hidden = false;
+        }
+      } catch { /* Spotify toggle stays hidden */ }
+    })();
+
+    function setSource(src) {
+      searchSource = src;
+      btnYt.classList.toggle('active', src === 'youtube');
+      btnSpotify.classList.toggle('active', src === 'spotify');
+      searchInput.placeholder = src === 'spotify'
+        ? 'Cerca su Spotify…'
+        : 'Cerca su YouTube…';
+      searchResults.innerHTML = '';
+    }
+
+    btnYt.addEventListener('click',      () => setSource('youtube'));
+    btnSpotify.addEventListener('click', () => setSource('spotify'));
+    // ── Helpers ───────────────────────────────────────────────────────────────
+    function formatDuration(seconds) {
+      if (!seconds) return '';
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return `${m}:${String(s).padStart(2, '0')}`;
+    }
+
+    function showToast(msg, type = 'info') {
+      const el = document.createElement('div');
+      el.className = `toast toast-${type}`;
+      el.textContent = msg;
+      toastArea.appendChild(el);
+      setTimeout(() => el.remove(), 3000);
+    }
+
+    function setEmptyState(container, msg) {
+      container.innerHTML = '';
+      const p = document.createElement('p');
+      p.className = 'muted-msg';
+      p.textContent = msg;
+      container.appendChild(p);
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────────
+    async function doSearch() {
+      const query = searchInput.value.trim();
+      if (!query) return;
+
+      searchBtn.disabled = true;
+      searchBtn.textContent = '…';
+      setEmptyState(searchResults, 'Ricerca in corso…');
+
+      try {
+        const endpoint = searchSource === 'spotify'
+          ? '/api/spotify/search'
+          : '/api/search';
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query }),
+        });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        if (searchSource === 'spotify') {
+          renderSpotifyResults(Array.isArray(data) ? data : []);
+        } else {
+          renderSearchResults(Array.isArray(data) ? data : []);
+        }
+      } catch {
+        setEmptyState(searchResults, 'Errore durante la ricerca. Riprova.');
+      } finally {
+        searchBtn.disabled = false;
+        searchBtn.textContent = 'Cerca';
+      }
+    }
+
+    function renderSearchResults(results) {
+      searchResults.innerHTML = '';
+
+      if (!results.length) {
+        setEmptyState(searchResults, 'Nessun risultato trovato.');
+        return;
+      }
+
+      results.forEach(r => {
+        const item = document.createElement('div');
+        item.className = 'card-item';
+
+        const info = document.createElement('div');
+        info.className = 'card-info';
+
+        const title = document.createElement('span');
+        title.className = 'card-title';
+        title.textContent = r.title;
+        info.appendChild(title);
+
+        if (r.duration) {
+          const dur = document.createElement('span');
+          dur.className = 'card-meta';
+          dur.textContent = formatDuration(r.duration);
+          info.appendChild(dur);
+        }
+
+        const btn = document.createElement('button');
+        btn.className = 'btn-add';
+        btn.textContent = '+';
+        btn.setAttribute('aria-label', `Aggiungi "${r.title}"`);
+        btn.addEventListener('click', () => addToQueue(r.video_id, r.title, r.duration || 0));
+
+        item.appendChild(info);
+        item.appendChild(btn);
+        searchResults.appendChild(item);
+      });
+    }
+
+    function renderSpotifyResults(results) {
+      searchResults.innerHTML = '';
+
+      if (!results.length) {
+        setEmptyState(searchResults, 'Nessun risultato trovato.');
+        return;
+      }
+
+      results.forEach(r => {
+        const item = document.createElement('div');
+        item.className = 'card-item';
+
+        if (r.image) {
+          const img = document.createElement('img');
+          img.className = 'album-art';
+          img.src = r.image;
+          img.alt = '';
+          img.loading = 'lazy';
+          item.appendChild(img);
+        }
+
+        const info = document.createElement('div');
+        info.className = 'card-info';
+
+        const title = document.createElement('span');
+        title.className = 'card-title';
+        title.textContent = r.title;
+        info.appendChild(title);
+
+        if (r.duration) {
+          const dur = document.createElement('span');
+          dur.className = 'card-meta';
+          dur.textContent = formatDuration(r.duration);
+          info.appendChild(dur);
+        }
+
+        const btn = document.createElement('button');
+        btn.className = 'btn-add';
+        btn.textContent = '+';
+        btn.setAttribute('aria-label', `Aggiungi "${r.title}"`);
+        btn.addEventListener('click', async () => {
+          btn.textContent = '…';
+          btn.disabled = true;
+          await addSpotifyToQueue(r.spotify_id, r.title, r.duration || 0);
+          btn.textContent = '+';
+          btn.disabled = false;
+        });
+
+        item.appendChild(info);
+        item.appendChild(btn);
+        searchResults.appendChild(item);
+      });
+    }
+
+    // ── Queue management ──────────────────────────────────────────────────────
+    async function addToQueue(videoId, title, duration) {
+      try {
+        const res = await fetch('/api/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: 'youtube', video_id: videoId, title, duration }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || 'Errore', 'error');
+          return;
+        }
+        showToast(`“${title}” aggiunta alla coda!`, 'success');
+        searchInput.value = '';
+        searchResults.innerHTML = '';
+        await refreshQueue();
+      } catch {
+        showToast('Errore di rete', 'error');
+      }
+    }
+
+    async function addSpotifyToQueue(spotifyId, title, duration) {
+      try {
+        const res = await fetch('/api/queue', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source: 'spotify', spotify_id: spotifyId, title, duration }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          showToast(data.error || 'Errore', 'error');
+          return;
+        }
+        showToast(`“${title}” aggiunta alla coda!`, 'success');
+        searchInput.value = '';
+        searchResults.innerHTML = '';
+        await refreshQueue();
+      } catch {
+        showToast('Errore di rete', 'error');
+      }
+    }
+
+    function renderQueue(nowPlaying, queue) {
+      // Now Playing
+      if (nowPlaying) {
+        nowPlayingSection.hidden = false;
+        nowPlayingTitle.textContent = nowPlaying.title;
+      } else {
+        nowPlayingSection.hidden = true;
+      }
+
+      // Queue
+      queueCountBadge.textContent = queue.length ? `(${queue.length})` : '';
+      queueList.innerHTML = '';
+
+      if (!queue.length) {
+        setEmptyState(queueList, 'Nessuna canzone in coda.');
+        return;
+      }
+
+      queue.forEach((s, i) => {
+        const item = document.createElement('div');
+        item.className = 'card-item';
+
+        const num = document.createElement('span');
+        num.className = 'queue-num';
+        num.textContent = i + 1;
+
+        const info = document.createElement('div');
+        info.className = 'card-info';
+
+        const title = document.createElement('span');
+        title.className = 'card-title';
+        title.textContent = s.title;
+        info.appendChild(title);
+
+        if (s.duration) {
+          const dur = document.createElement('span');
+          dur.className = 'card-meta';
+          dur.textContent = formatDuration(s.duration);
+          info.appendChild(dur);
+        }
+
+        item.appendChild(num);
+        item.appendChild(info);
+        queueList.appendChild(item);
+      });
+    }
+
+    async function refreshQueue() {
+      try {
+        const res = await fetch('/api/queue');
+        if (!res.ok) return;
+        const data = await res.json();
+        renderQueue(data.now_playing, data.queue);
+      } catch { /* ignore network hiccups */ }
+    }
+
+    // ── Skip ──────────────────────────────────────────────────────────────────
+    async function skip() {
+      await fetch('/api/skip', { method: 'POST' });
+    }
+
+    // ── Event listeners ───────────────────────────────────────────────────────
+    searchBtn.addEventListener('click', doSearch);
+    searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') doSearch(); });
+    skipBtn.addEventListener('click', skip);
+
+    // ── Poll every 2 s ────────────────────────────────────────────────────────
+    refreshQueue();
+    setInterval(refreshQueue, 2000);
+  </script>
+</body>
+</html>
