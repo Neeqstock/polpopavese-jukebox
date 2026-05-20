@@ -61,9 +61,16 @@ echo "127.0.1.1 $HOSTNAME" >> /etc/hosts
 # ============================================================================
 
 echo "[2/9] Installing system dependencies..."
+
+# Add Mopidy official repository
+mkdir -p /etc/apt/keyrings
+wget -q -O - https://apt.mopidy.com/mopidy.gpg | tee /etc/apt/keyrings/mopidy.gpg > /dev/null
+echo "deb [signed-by=/etc/apt/keyrings/mopidy.gpg] https://apt.mopidy.com/ bookworm main" > /etc/apt/sources.list.d/mopidy.list
+
 apt-get update
 apt-get install -y \
   python3 python3-pip python3-venv python3-dev \
+  python3-setuptools python3-wheel \
   gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly \
   gstreamer1.0-libav libxml2 libxslt1.1 \
   ffmpeg qrencode \
@@ -120,9 +127,31 @@ pip3 install --upgrade --break-system-packages \
   Mopidy-Local \
   Mopidy-SoundCloud
 
-# Optional: Spotify
+# Optional: Spotify (Modern Rust-based implementation for Ubuntu 24.04+)
 if [ -n "$SPOTIFY_CLIENT_ID" ] && [ -n "$SPOTIFY_CLIENT_SECRET" ]; then
-  pip3 install --upgrade --break-system-packages Mopidy-Spotify
+  echo "Installing Modern Spotify extension (Rust backend)..."
+  # 1. Install GStreamer Spotify plugin (Rust)
+  ARCH=$(dpkg --print-architecture)
+  case "$ARCH" in
+    amd64) GST_ARCH="amd64" ;;
+    arm64) GST_ARCH="arm64" ;;
+    armhf) GST_ARCH="armhf" ;;
+    *) GST_ARCH="" ;;
+  esac
+
+  if [ -n "$GST_ARCH" ]; then
+    # v0.15.0-alpha.1 is required for Mopidy-Spotify 5.x (Rust backend)
+    GST_SPOTIFY_VER="0.15.0-alpha.1"
+    GST_SPOTIFY_URL="https://github.com/mopidy/gst-plugins-rs-build/releases/download/v${GST_SPOTIFY_VER}/gst-plugin-spotify_${GST_SPOTIFY_VER}_$GST_ARCH.deb"
+    wget -q -O /tmp/gst-plugin-spotify.deb "$GST_SPOTIFY_URL"
+    apt-get install -y /tmp/gst-plugin-spotify.deb
+    rm /tmp/gst-plugin-spotify.deb
+  else
+    echo "Warning: Unsupported architecture for Spotify Rust plugin. Skipping."
+  fi
+
+  # 2. Install Mopidy-Spotify alpha (v5.x)
+  pip3 install --upgrade --break-system-packages "mopidy-spotify>=5.0.0a3"
 fi
 
 # Configure Mopidy
@@ -146,7 +175,10 @@ allowed_origins = $HOSTNAME, $HOSTNAME.local, localhost
 
 [audio]
 mixer = software
-output = pulsesink
+# alsasink avoids PulseAudio socket permission issues when running as a system service.
+# The mopidy systemd drop-in below runs mopidy as the login user, which is required
+# for this to work properly.
+output = alsasink
 visualizer =
 
 [local]
@@ -179,6 +211,12 @@ enabled = true
 [iris]
 enabled = true
 EOF
+
+# The config must be owned by the login user (not system 'mopidy') because the
+# systemd drop-in below runs mopidy as $JUKEBOX_USER. Without this, mopidy
+# cannot read its own config and Spotify/SoundCloud credentials will be missing.
+chown "$JUKEBOX_USER:$JUKEBOX_USER" /etc/mopidy/mopidy.conf
+chmod 600 /etc/mopidy/mopidy.conf
 
 # Inject user credentials if provided
 if [ -n "$SOUNDCLOUD_API_TOKEN" ]; then
@@ -249,7 +287,7 @@ audio = {
 };
 
 sessioncontrol = {
-  wait_for_output = yes;
+  wait_for_output = "yes";
   dacp_server_port = 3689;
 };
 EOF
